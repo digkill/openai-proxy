@@ -1,0 +1,29 @@
+[package]
+name = "openai-proxy"
+version = "0.1.0"
+edition = "2024"
+
+[features]
+# Windows dev по умолчанию — native TLS (Schannel)
+default = ["tls-native"]
+
+# TLS стеки
+tls-native = ["reqwest/native-tls-vendored"]
+tls-rustls = ["reqwest/rustls-tls-native-roots"]
+
+[dependencies]
+axum = "0.7"
+tokio = { version = "1", features = ["full"] }
+http = "1"
+http-body-util = "0.1"
+tower = "0.5"
+tower-http = { version = "0.5", features = ["trace", "compression-br", "compression-gzip", "cors"] }
+dotenvy = "0.15"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
+
+# reqwest без дефолтных фич, но с потоком ответов
+reqwest = { version = "0.12", default-features = false, features = ["stream"] }
+futures-util = "0.3"
+tokio-stream = "0.1"
+bytes = "1"
