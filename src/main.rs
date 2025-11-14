@@ -1,4 +1,4 @@
-use std::{net::SocketAddr, sync::Arc};
+use std::{fs::File, io::BufReader, net::SocketAddr, sync::Arc};
 
 use axum::{
     body::{to_bytes, Body},
@@ -12,13 +12,15 @@ use futures_util::StreamExt; // for .next() on streams
 use http::header::{
     AUTHORIZATION, CONNECTION, HOST, PROXY_AUTHENTICATE, PROXY_AUTHORIZATION, TE, TRAILER,
     TRANSFER_ENCODING, UPGRADE, ACCESS_CONTROL_ALLOW_ORIGIN, ACCESS_CONTROL_ALLOW_METHODS,
-    ACCESS_CONTROL_ALLOW_HEADERS, ACCESS_CONTROL_MAX_AGE,
+    ACCESS_CONTROL_ALLOW_HEADERS, ACCESS_CONTROL_MAX_AGE, ACCESS_CONTROL_EXPOSE_HEADERS,
+    ACCESS_CONTROL_ALLOW_CREDENTIALS, ACCESS_CONTROL_REQUEST_METHOD, ACCESS_CONTROL_REQUEST_HEADERS,
 };
+use rustls_pemfile::{certs, pkcs8_private_keys};
 use tokio::sync::mpsc;
 use tokio_stream::wrappers::ReceiverStream;
 use tower::ServiceBuilder;
 use tower_http::{compression::CompressionLayer, trace::TraceLayer};
-use tracing::info;
+use tracing::{error, info};
 use tracing_subscriber::{fmt::Subscriber, EnvFilter};
 
 #[derive(Clone)]
@@ -69,9 +71,52 @@ async fn main() {
         .parse()
         .expect("invalid bind addr");
 
-    let listener = tokio::net::TcpListener::bind(addr).await.unwrap();
-    info!("listening on http://{addr}");
-    axum::serve(listener, app).await.unwrap();
+    // Проверяем, нужно ли использовать HTTPS
+    let cert_path = std::env::var("TLS_CERT_PATH").ok();
+    let key_path = std::env::var("TLS_KEY_PATH").ok();
+
+    if let (Some(cert_path), Some(key_path)) = (cert_path, key_path) {
+        // HTTPS режим
+        let certs = match load_certs(&cert_path) {
+            Ok(certs) => certs,
+            Err(e) => {
+                error!("Failed to load certificates: {e}");
+                return;
+            }
+        };
+        let key = match load_private_key(&key_path) {
+            Ok(key) => key,
+            Err(e) => {
+                error!("Failed to load private key: {e}");
+                return;
+            }
+        };
+
+        let config = match rustls::ServerConfig::builder()
+            .with_safe_defaults()
+            .with_no_client_auth()
+            .with_single_cert(certs, key)
+        {
+            Ok(config) => config,
+            Err(e) => {
+                let err_msg = format!("Failed to create TLS config: {e}");
+                error!("{}", err_msg);
+                return;
+            }
+        };
+
+        let tls_config = axum_server::tls_rustls::RustlsConfig::from_config(Arc::new(config));
+        info!("listening on https://{addr}");
+        axum_server::bind_rustls(addr, tls_config)
+            .serve(app.into_make_service())
+            .await
+            .unwrap();
+    } else {
+        // HTTP режим
+        let listener = tokio::net::TcpListener::bind(addr).await.unwrap();
+        info!("listening on http://{addr}");
+        axum::serve(listener, app).await.unwrap();
+    }
 }
 
 async fn proxy_handler(
@@ -244,13 +289,51 @@ fn copy_headers_filtered(src: &HeaderMap, dst: &mut HeaderMap) {
     }
 }
 
+fn is_cors_header(name: &HeaderName) -> bool {
+    matches!(
+        *name,
+        ACCESS_CONTROL_ALLOW_ORIGIN
+            | ACCESS_CONTROL_ALLOW_METHODS
+            | ACCESS_CONTROL_ALLOW_HEADERS
+            | ACCESS_CONTROL_MAX_AGE
+            | ACCESS_CONTROL_EXPOSE_HEADERS
+            | ACCESS_CONTROL_ALLOW_CREDENTIALS
+            | ACCESS_CONTROL_REQUEST_METHOD
+            | ACCESS_CONTROL_REQUEST_HEADERS
+    )
+}
+
 fn copy_response_headers_filtered(src: &HeaderMap, dst: &mut HeaderMap) {
     for (name, value) in src.iter() {
-        if hop_by_hop_header(name) {
+        // Фильтруем hop-by-hop заголовки и CORS заголовки (они будут добавлены нами)
+        if hop_by_hop_header(name) || is_cors_header(name) {
             continue;
         }
         if let Ok(cloned) = HeaderValue::from_bytes(value.as_bytes()) {
             dst.insert(name.clone(), cloned);
         }
     }
+}
+
+fn load_certs(path: &str) -> Result<Vec<rustls::Certificate>, String> {
+    let cert_file = File::open(path)
+        .map_err(|e| format!("Failed to open certificate file {path}: {e}"))?;
+    let mut reader = BufReader::new(cert_file);
+    let certs = certs(&mut reader)
+        .map_err(|e| format!("Failed to parse certificate: {e}"))?;
+    Ok(certs.into_iter().map(rustls::Certificate).collect())
+}
+
+fn load_private_key(path: &str) -> Result<rustls::PrivateKey, String> {
+    let key_file = File::open(path)
+        .map_err(|e| format!("Failed to open key file {path}: {e}"))?;
+    let mut reader = BufReader::new(key_file);
+    let keys = pkcs8_private_keys(&mut reader)
+        .map_err(|e| format!("Failed to parse private key: {e}"))?;
+    
+    if keys.is_empty() {
+        return Err("No private keys found in file".into());
+    }
+    
+    Ok(rustls::PrivateKey(keys[0].clone()))
 }

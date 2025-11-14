@@ -12,6 +12,8 @@
 
 ## Запуск
 
+### HTTP режим (по умолчанию)
+
 ```bash
 cp .env.example .env
 # заполните SERVICE_TOKEN и OPENAI_API_KEY
@@ -23,11 +25,46 @@ cargo run --release
 
 curl -s http://127.0.0.1:8080/healthz
 # ok
+```
 
- OpenAI — прокси сам подставит его
+### HTTPS режим (локальная разработка)
 
-Пример (Chat Completions):
+1. Сгенерируйте самоподписанный сертификат:
 
+**Linux/macOS:**
+```bash
+./scripts/generate-local-cert.sh
+```
+
+**Windows (PowerShell):**
+```powershell
+.\scripts\generate-local-cert.ps1
+```
+
+2. Добавьте в `.env`:
+```bash
+TLS_CERT_PATH=certs/localhost.crt
+TLS_KEY_PATH=certs/localhost.key
+BIND_PORT=8443
+```
+
+3. Запустите сервер:
+```bash
+cargo run --release
+# слушает по умолчанию :8443 (HTTPS)
+```
+
+4. Проверка:
+```bash
+curl -k https://localhost:8443/healthz
+# ok
+```
+
+**Примечание:** Флаг `-k` отключает проверку сертификата (для самоподписанных сертификатов).
+
+### Пример использования (Chat Completions)
+
+```bash
 curl -N http://127.0.0.1:8080/v1/chat/completions \
   -H "Authorization: Bearer REPLACE_WITH_SERVICE_TOKEN" \
   -H "Content-Type: application/json" \
@@ -36,6 +73,19 @@ curl -N http://127.0.0.1:8080/v1/chat/completions \
     "messages":[{"role":"user","content":"Hello!"}],
     "stream": true
   }'
+```
+
+Для HTTPS:
+```bash
+curl -k -N https://localhost:8443/v1/chat/completions \
+  -H "Authorization: Bearer REPLACE_WITH_SERVICE_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model":"gpt-4o-mini",
+    "messages":[{"role":"user","content":"Hello!"}],
+    "stream": true
+  }'
+```
 
 Деплой
 
