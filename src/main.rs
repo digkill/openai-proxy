@@ -11,13 +11,14 @@ use dotenvy::dotenv;
 use futures_util::StreamExt; // for .next() on streams
 use http::header::{
     AUTHORIZATION, CONNECTION, HOST, PROXY_AUTHENTICATE, PROXY_AUTHORIZATION, TE, TRAILER,
-    TRANSFER_ENCODING, UPGRADE,
+    TRANSFER_ENCODING, UPGRADE, ACCESS_CONTROL_ALLOW_ORIGIN, ACCESS_CONTROL_ALLOW_METHODS,
+    ACCESS_CONTROL_ALLOW_HEADERS, ACCESS_CONTROL_MAX_AGE,
 };
 use tokio::sync::mpsc;
 use tokio_stream::wrappers::ReceiverStream;
 use tower::ServiceBuilder;
 use tower_http::{compression::CompressionLayer, trace::TraceLayer};
-use tracing::{error, info};
+use tracing::info;
 use tracing_subscriber::{fmt::Subscriber, EnvFilter};
 
 #[derive(Clone)]
@@ -78,6 +79,29 @@ async fn proxy_handler(
     Path(tail): Path<String>,
     req: Request<Body>,
 ) -> Result<Response<Body>, (StatusCode, String)> {
+    // Обработка OPTIONS запросов (preflight CORS)
+    if req.method() == http::Method::OPTIONS {
+        let mut response = Response::new(Body::empty());
+        *response.status_mut() = StatusCode::NO_CONTENT;
+        response.headers_mut().insert(
+            ACCESS_CONTROL_ALLOW_ORIGIN,
+            HeaderValue::from_static("*"),
+        );
+        response.headers_mut().insert(
+            ACCESS_CONTROL_ALLOW_METHODS,
+            HeaderValue::from_static("GET, POST, PUT, DELETE, OPTIONS, PATCH"),
+        );
+        response.headers_mut().insert(
+            ACCESS_CONTROL_ALLOW_HEADERS,
+            HeaderValue::from_static("Authorization, Content-Type, Accept, X-Requested-With"),
+        );
+        response.headers_mut().insert(
+            ACCESS_CONTROL_MAX_AGE,
+            HeaderValue::from_static("86400"),
+        );
+        return Ok(response);
+    }
+
     // 1) Service token auth
     if !is_authorized(req.headers(), &state.service_token) {
         return Err((
@@ -165,6 +189,21 @@ async fn proxy_handler(
     let mut out = Response::new(body);
     *out.status_mut() = status;
     *out.headers_mut() = resp_headers;
+    
+    // Добавляем CORS заголовки к обычным ответам
+    out.headers_mut().insert(
+        ACCESS_CONTROL_ALLOW_ORIGIN,
+        HeaderValue::from_static("*"),
+    );
+    out.headers_mut().insert(
+        ACCESS_CONTROL_ALLOW_METHODS,
+        HeaderValue::from_static("GET, POST, PUT, DELETE, OPTIONS, PATCH"),
+    );
+    out.headers_mut().insert(
+        ACCESS_CONTROL_ALLOW_HEADERS,
+        HeaderValue::from_static("Authorization, Content-Type, Accept, X-Requested-With"),
+    );
+    
     Ok(out)
 }
 
